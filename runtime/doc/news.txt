@@ -190,6 +190,8 @@ OPTIONS
   character by character.
 • Expanding a file name without wildcards (as |:runtime| and |'runtimepath'|
   lookups do for most names) scans it once instead of four times.
+• |glob()|, |:runtime| and |'runtimepath'| lookups match the patterns "*" and
+  "*.ext" without compiling a regexp.
 
 PLUGINS
 
