@@ -180,6 +180,8 @@ OPTIONS
   restored instead.
 • Wildcard expansion (|glob()|, |:runtime|, |'runtimepath'| lookups) checks
   each match with one `stat()` instead of three.
+• Detecting wildcards, environment variables and shell quoting in a long path
+  skips over ordinary characters in bulk.
 
 PLUGINS
 
