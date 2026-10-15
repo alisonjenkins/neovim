@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Comparing paths that share a long directory prefix, as when sorting |glob()|
+  results, skips the common prefix in bulk.
 
 PLUGINS
 

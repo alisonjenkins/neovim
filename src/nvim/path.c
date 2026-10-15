@@ -1966,6 +1966,19 @@ int path_cmp(bool ic, const char *p, const char *q, size_t maxlen)
   }
 #endif
 
+  // Paths often share a long directory prefix.  Equal ASCII bytes fold to the same character and
+  // have length 1, so step over them without folding.
+  size_t same = 0;
+  while (same < maxlen - len && p[same] == q[same] && (int8_t)p[same] > 0) {
+    same++;
+  }
+  if (same > 0 && same < maxlen - len && ((int8_t)p[same] < 0 || (int8_t)q[same] < 0)) {
+    same--;  // the last one is followed by a possibly composing character
+  }
+  p += same;
+  q += same;
+  len += same;
+
   for (int i = 0, j = 0; len < maxlen; len += (size_t)i) {
     c1 = path_fold_char(ic, p, &i);
     c2 = path_fold_char(ic, q, &j);
