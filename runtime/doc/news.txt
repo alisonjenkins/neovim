@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Splitting comma-separated options such as |'runtimepath'| copies each part
+  in one go instead of character by character.
 
 PLUGINS
 
