@@ -20,7 +20,7 @@ typedef struct {
                              ///< undo, '[ and ". treat as one. Reanchored after cursor-move, C-G u.
   pos_T start_orig;          ///< Where insert by the user started (for op_insert): follows `start`
                              ///< until insertion starts right of it; <bs> before it pulls back.
-  colnr_T start_textlen;     ///< length of line when insert started
+  colnr_T start_textlen;     ///< length of line when insert started, -1 if not measured
   colnr_T start_blank_vcol;  ///< vcol for first inserted blank
   InsArrow moved;            ///< Cursor moved since the last edit; see InsArrow.
   bool stop_insert_mode;     ///< for ":stopinsert"

@@ -523,4 +523,46 @@ describe('insert-mode', function()
       {5:-- REPLACE --}                 |
     ]])
   end)
+
+  describe("'textwidth' with the 'l' flag of 'formatoptions'", function()
+    local long = string.rep('x', 40)
+    local tail = ' tail words that go on'
+    -- A line longer than 'textwidth' when Insert started is not broken with "l".
+    local kept = { long .. tail }
+    local broken = { long, 'tail words that go', 'on' }
+    local short_broken = { 'short tail words', 'that go on' }
+
+    --- @param line string
+    --- @param keys string
+    --- @param want string[]
+    local function check(line, keys, want)
+      api.nvim_buf_set_lines(0, 0, -1, true, { line })
+      feed(keys .. tail .. '<Esc>')
+      eq(want, api.nvim_buf_get_lines(0, 0, -1, true), keys)
+    end
+
+    it('is honored when set before Insert mode', function()
+      command('setlocal textwidth=20')
+      command('setlocal formatoptions+=l')
+      check(long, 'A', kept)
+      check(long, 'A<Left>', { string.rep('x', 39) .. tail .. 'x' })
+      check('short', 'A', short_broken)
+      command('setlocal formatoptions-=l')
+      check(long, 'A', broken)
+    end)
+
+    it('is honored when set after Insert mode started', function()
+      command('setlocal textwidth=0')
+      check(long, 'A<Cmd>setlocal textwidth=20 formatoptions+=l<CR>', kept)
+      check('short', 'A<Cmd>setlocal textwidth=20 formatoptions+=l<CR>', short_broken)
+      command('setlocal formatoptions-=l')
+      check(long, 'A<Cmd>setlocal textwidth=20<CR>', broken)
+    end)
+
+    it('does not break lines without a "textwidth"', function()
+      command('setlocal textwidth=0 formatoptions+=l')
+      check(long, 'A', kept)
+      check('short', 'A', { 'short' .. tail })
+    end)
+  end)
 end)

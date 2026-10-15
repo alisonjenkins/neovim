@@ -153,6 +153,20 @@ static kvec_t(char) replace_stack = KV_INITIAL_VALUE;
     } \
   } while (0)
 
+/// Gets the width of the cursor line for Ins.start_textlen, or -1 if it is not
+/// needed yet.
+///
+/// Only insertchar() reads it, with 'textwidth' and the "l" flag of
+/// 'formatoptions'. Measuring a very long line is slow, so insertchar() measures
+/// it when it finds -1.
+static colnr_T ins_start_textlen(void)
+{
+  if ((curbuf->b_p_tw <= 0 && curbuf->b_p_wm == 0) || !has_format_option(kFoInsLong)) {
+    return -1;
+  }
+  return linetabsize_str(get_cursor_line_ptr());
+}
+
 static void insert_enter(InsertState *s)
 {
   s->did_backspace = true;
@@ -213,7 +227,7 @@ static void insert_enter(InsertState *s)
     }
   }
 
-  Ins.start_textlen = linetabsize_str(get_cursor_line_ptr());
+  Ins.start_textlen = ins_start_textlen();
   Ins.start_blank_vcol = MAXCOL;
 
   if (!Ins.did_ai) {
@@ -1964,6 +1978,10 @@ void insertchar(int c, int flags, int second_indent)
   const int textwidth = comp_textwidth(force_format);
   const bool fo_ins_blank = has_format_option(kFoInsBlank);
 
+  if (textwidth > 0 && Ins.start_textlen < 0 && curwin->w_cursor.lnum == Ins.start.lnum) {
+    Ins.start_textlen = linetabsize_str(get_cursor_line_ptr());
+  }
+
   // Try to break the line in two or more pieces when:
   // - Always do this if we have been called to do formatting only.
   // - Always do this when 'formatoptions' has the 'a' flag and the line
@@ -2229,7 +2247,7 @@ int stop_arrow(void)
       // right, except when nothing was inserted yet.
       Ins.update_start_orig = false;
     }
-    Ins.start_textlen = linetabsize_str(get_cursor_line_ptr());
+    Ins.start_textlen = ins_start_textlen();
 
     const bool jumped = Ins.moved == kInsJump;
     if (u_save_cursor() == OK) {
@@ -2263,7 +2281,7 @@ int stop_arrow(void)
       // register paste.
       if (lt(curwin->w_cursor, Ins.start)) {
         Ins.start = curwin->w_cursor;
-        Ins.start_textlen = (colnr_T)linetabsize_str(get_cursor_line_ptr());
+        Ins.start_textlen = ins_start_textlen();
       }
       Ins.need_undo = false;
     }
