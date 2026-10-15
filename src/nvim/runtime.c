@@ -775,18 +775,21 @@ static bool push_path(RuntimeSearchPath *search_path, Set(String) *rtp_used, cha
   return false;
 }
 
-static void expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used, char *entry,
-                             bool after, size_t pos_in_rtp)
+/// Expands wildcards in a 'runtimepath' entry and adds the directories it matches.
+///
+/// @return  the number of matches, or -1 if the entry was added before.
+static int expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used, char *entry,
+                            bool after, size_t pos_in_rtp)
 {
   if (set_has(String, rtp_used, cstr_as_string(entry))) {
-    return;
+    return -1;
   }
 
   if (!*entry) {
     push_path(search_path, rtp_used, entry, after, pos_in_rtp);
   }
 
-  int num_files;
+  int num_files = 0;
   char **files;
   char *(pat[]) = { entry };
   if (gen_expand_wildcards(1, pat, &num_files, &files, EW_DIR | EW_NOBREAK) == OK) {
@@ -796,6 +799,7 @@ static void expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_us
     }
     FreeWild(num_files, files);
   }
+  return num_files;
 }
 
 static void expand_pack_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used,
@@ -810,7 +814,10 @@ static void expand_pack_entry(RuntimeSearchPath *search_path, Set(String) *rtp_u
     }
     xstrlcpy(buf, pack_entry, sizeof buf);
     xstrlcpy(buf + pack_entry_len, start_pat[i], sizeof buf - pack_entry_len);
-    expand_rtp_entry(search_path, rtp_used, buf, false, pos_in_rtp);
+    if (expand_rtp_entry(search_path, rtp_used, buf, false, pos_in_rtp) == 0) {
+      // No package directory, so there can be no "after" directory in one either.
+      continue;
+    }
     size_t after_size = strlen(buf) + 7;
     char *after = xmallocz(after_size);
     xstrlcpy(after, buf, after_size);

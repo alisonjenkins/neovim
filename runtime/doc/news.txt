@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Building the runtime search path does not look for the "after" directories
+  of start packages in 'packpath' entries that have no start package.
 
 PLUGINS
 
