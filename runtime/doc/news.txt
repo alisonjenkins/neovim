@@ -192,6 +192,8 @@ OPTIONS
   lookups do for most names) scans it once instead of four times.
 • |glob()|, |:runtime| and |'runtimepath'| lookups match the patterns "*" and
   "*.ext" without compiling a regexp.
+• Building the runtime search path does not look for the "after" directories
+  of start packages in 'packpath' entries that have no start package.
 
 PLUGINS
 
