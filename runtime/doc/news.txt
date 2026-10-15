@@ -182,6 +182,8 @@ OPTIONS
   each match with one `stat()` instead of three.
 • Detecting wildcards, environment variables and shell quoting in a long path
   skips over ordinary characters in bulk.
+• Comparing paths that share a long directory prefix, as when sorting |glob()|
+  results, skips the common prefix in bulk.
 
 PLUGINS
 
