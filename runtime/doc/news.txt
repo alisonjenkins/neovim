@@ -196,6 +196,8 @@ OPTIONS
   of start packages in 'packpath' entries that have no start package.
 • |:source| and |:runtime| find a script they loaded before by its name in a
   hash map instead of comparing the name with every loaded script.
+• Adding the start packages of many 'packpath' directories resolves each
+  'runtimepath' entry once, instead of once per package.
 
 PLUGINS
 
