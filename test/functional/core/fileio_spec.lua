@@ -45,6 +45,8 @@ describe('fileio', function()
     os.remove('Xtest_тест.md')
     os.remove('Xtest-u8-int-max')
     os.remove('Xtest-overwrite-forced')
+    os.remove('Xtest_longline')
+    os.remove('Xtest_manylines')
     rmdir('Xtest_startup_swapdir')
     rmdir('Xtest_backupdir')
     rmdir('Xtest_backupdir with spaces')
@@ -264,6 +266,73 @@ describe('fileio', function()
     -- This should not segfault
     command('edit ++enc=utf32 Xtest-u8-int-max')
     assert_alive()
+  end)
+
+  describe('reading long lines', function()
+    local MiB = 1024 * 1024
+
+    it('keeps lines that grow the read buffer', function()
+      clear()
+      local lines = {}
+      -- Around the 64 KiB initial and the 1 MiB maximum read size, plus NUL (read as NL) and a CR.
+      for i, len in ipairs({ 0xffff, 0x10000, 0x10001, MiB - 1, MiB, MiB + 1, 3 * MiB + 5 }) do
+        lines[i] = string.rep(string.char(96 + i), len)
+      end
+      lines[#lines + 1] = string.rep('x', MiB) .. '\0' .. string.rep('y', MiB) .. '\r'
+      write_file('Xtest_longline', table.concat(lines, '\n'), true)
+      command('edit Xtest_longline')
+      eq(lines, api.nvim_buf_get_lines(0, 0, -1, false))
+      eq(false, api.nvim_get_option_value('endofline', {}))
+    end)
+
+    it('keeps a long line when rereading with another fileformat or encoding', function()
+      clear()
+      local long = string.rep('x', 3 * MiB)
+      -- "dos" is tried first, but the first line has no CR.
+      write_file('Xtest_longline', 'one\n' .. long .. '\n', true)
+      command('set fileformats=dos,unix')
+      command('edit Xtest_longline')
+      eq('unix', api.nvim_get_option_value('fileformat', {}))
+      eq({ 'one', long }, api.nvim_buf_get_lines(0, 0, 2, false))
+
+      -- "utf-8" fails on the last byte of the long line.
+      write_file('Xtest_longline', long .. '\xe9\n', true)
+      command('set fileencodings=utf-8,latin1')
+      command('edit! Xtest_longline')
+      eq('latin1', api.nvim_get_option_value('fileencoding', {}))
+      eq({ long .. 'é' }, api.nvim_buf_get_lines(0, 0, 1, false))
+    end)
+
+    it('reads a long line in linear time', function()
+      skip(t.is_asan() or not is_os('linux'), 'N/A: needs realloc() to grow blocks without copying')
+      clear()
+      local ratio = n.exec_lua(function()
+        -- The same bytes as one line and as 100-byte lines.
+        local function write(name, chunk)
+          local f = assert(io.open(name, 'wb'))
+          for _ = 1, 48 do
+            f:write(chunk)
+          end
+          f:close()
+        end
+        write('Xtest_longline', string.rep('a', 1024 * 1024))
+        write('Xtest_manylines', string.rep(string.rep('a', 99) .. '\n', 10000))
+        vim.o.modeline = false
+
+        local function read_ms(name)
+          local best = math.huge
+          for _ = 1, 3 do
+            vim.cmd('silent! %bwipeout!')
+            local start = vim.uv.hrtime()
+            vim.cmd('noautocmd silent edit ' .. name)
+            best = math.min(best, (vim.uv.hrtime() - start) / 1e6)
+          end
+          return best
+        end
+        return read_ms('Xtest_longline') / read_ms('Xtest_manylines')
+      end)
+      ok(ratio < 10, 'at most 10x the time of many lines', ('%.1fx'):format(ratio))
+    end)
   end)
 
   it('rename() replaces an existing file with a directory', function()

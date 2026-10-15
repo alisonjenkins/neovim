@@ -135,6 +135,26 @@ void *verbose_try_malloc(size_t size) FUNC_ATTR_MALLOC FUNC_ATTR_ALLOC_SIZE(1)
   return ret;
 }
 
+/// realloc() wrapper that tries to free some memory before trying again, and
+/// shows an out-of-memory error message before returning NULL
+///
+/// @param ptr  Block to resize, still valid when this returns NULL
+/// @param size
+/// @return pointer to allocated space. NULL if out of memory
+void *verbose_try_realloc(void *ptr, size_t size) FUNC_ATTR_ALLOC_SIZE(2)
+{
+  size_t allocated_size = size ? size : 1;
+  void *ret = realloc(ptr, allocated_size);
+  if (!ret) {
+    try_to_free_memory();
+    ret = realloc(ptr, allocated_size);
+  }
+  if (!ret) {
+    do_outofmem_msg(size);
+  }
+  return ret;
+}
+
 /// malloc() wrapper that never returns NULL
 ///
 /// xmalloc() succeeds or gracefully aborts when out of memory.

@@ -928,8 +928,12 @@ retry:
         *ptr = NL;  // split line by inserting a NL
         size = 1;
       } else if (!skip_read) {
+        // A line that fills the buffer is grown in place: copying it into a
+        // new buffer each time makes reading a long line quadratic.
+        const bool grow = linerest > 0 && ptr - linerest == buffer;
         for (; size >= 10; size /= 2) {
-          new_buffer = verbose_try_malloc((size_t)size + (size_t)linerest + 1);
+          size_t new_size = (size_t)size + (size_t)linerest + 1;
+          new_buffer = grow ? verbose_try_realloc(buffer, new_size) : verbose_try_malloc(new_size);
           if (new_buffer) {
             break;
           }
@@ -938,10 +942,12 @@ retry:
           error = true;
           break;
         }
-        if (linerest) {         // copy characters from the previous buffer
-          memmove(new_buffer, ptr - linerest, (size_t)linerest);
+        if (!grow) {
+          if (linerest) {         // copy characters from the previous buffer
+            memmove(new_buffer, ptr - linerest, (size_t)linerest);
+          }
+          xfree(buffer);
         }
-        xfree(buffer);
         buffer = new_buffer;
         ptr = buffer + linerest;
         line_start = buffer;
