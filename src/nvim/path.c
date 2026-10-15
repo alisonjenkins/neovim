@@ -719,10 +719,11 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
           if (*path_end != NUL) {
             backslash_halve(buf + len + 1);
           }
-          // add existing file or symbolic link
-          if ((flags & EW_ALLLINKS)
-              ? os_fileinfo_link(buf, &file_info)
-              : os_path_exists(buf)) {
+          // add existing file or symbolic link; addfile() checks that, unless EW_NOTFOUND
+          if (!(flags & EW_NOTFOUND)
+              || ((flags & EW_ALLLINKS)
+                  ? os_fileinfo_link(buf, &file_info)
+                  : os_path_exists(buf))) {
             addfile(gap, buf, flags);
           }
         }
@@ -1461,14 +1462,10 @@ char *path_to_slash_save(const char *p)
 void addfile(garray_T *gap, char *f, int flags)
   FUNC_ATTR_NONNULL_ALL
 {
-  bool isdir;
   FileInfo file_info;
 
-  // if the file/dir/link doesn't exist, may not add it
-  if (!(flags & EW_NOTFOUND)
-      && ((flags & EW_ALLLINKS)
-          ? !os_fileinfo_link(f, &file_info)
-          : !os_path_exists(f))) {
+  // if the link doesn't exist, may not add it
+  if (!(flags & EW_NOTFOUND) && (flags & EW_ALLLINKS) && !os_fileinfo_link(f, &file_info)) {
     return;
   }
 
@@ -1479,7 +1476,12 @@ void addfile(garray_T *gap, char *f, int flags)
   }
 #endif
 
-  isdir = os_isdir(f);
+  // One stat() tells whether the file exists and whether it is a directory.
+  const int32_t mode = os_getperm(f);
+  if (mode < 0 && !(flags & (EW_NOTFOUND | EW_ALLLINKS))) {
+    return;
+  }
+  const bool isdir = mode >= 0 && S_ISDIR(mode);
   if ((isdir && !(flags & EW_DIR)) || (!isdir && !(flags & EW_FILE))) {
     return;
   }
