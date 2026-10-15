@@ -487,6 +487,19 @@ char *save_abs_path(const char *name)
   return TO_SLASH_SAVE(name);
 }
 
+/// Like `vim_strchr(set, c) != NULL`, for a `set` of ASCII characters and a byte `c`.  Short sets
+/// are cheaper to walk than to call strchr() on.
+static inline bool in_ascii_set(const char *set, uint8_t c)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  for (; *set != NUL; set++) {
+    if ((uint8_t)(*set) == c) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Checks if a path has an unescaped wildcard requiring expansion (path_expand).
 /// @param p The path to expand.
 /// @param all Also detect chars requiring special handling:
@@ -500,15 +513,19 @@ bool path_has_wildcard(const char *p, bool all)
   FUNC_ATTR_NONNULL_ALL
 {
   char *wildcards = all ? PATH_ALL_WILDCARDS : PATH_ESC_WILDCARDS;
+  const char *stops = all ? "\\" PATH_ALL_WILDCARDS "~" : "\\" PATH_ESC_WILDCARDS;
   for (; *p; p++) {
+    p += strcspn(p, stops);
+    if (*p == NUL) {
+      break;
+    }
 #ifdef UNIX
     if (p[0] == '\\' && p[1] != NUL) {
       p++;
       continue;
     }
 #endif
-    if (vim_strchr(wildcards, (uint8_t)(*p)) != NULL
-        || (all && p[0] == '~' && p[1] != NUL)) {
+    if (in_ascii_set(wildcards, (uint8_t)(*p)) || (all && p[0] == '~' && p[1] != NUL)) {
       return true;
     }
   }
@@ -595,7 +612,7 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
     } else if (path_end >= path + wildoff
                // "~" not included here, we want to treat it as literal.
                // "~/", "~user/" and env expansion are already handled in `gen_expand_wildcards`.
-               && (vim_strchr(PATH_ESC_WILDCARDS, (uint8_t)(*path_end)) != NULL
+               && (in_ascii_set(PATH_ESC_WILDCARDS, (uint8_t)(*path_end))
 #ifndef MSWIN
                    || (!p_fic && (flags & EW_ICASE) && mb_isalpha(utf_ptr2char(path_end)))
 #endif
@@ -1123,9 +1140,13 @@ static bool has_env_var(char *p)
   FUNC_ATTR_NONNULL_ALL
 {
   for (; *p; p++) {
+    p += strcspn(p, "\\$");
+    if (*p == NUL) {
+      break;
+    }
     if (*p == '\\' && p[1] != NUL) {
       p++;
-    } else if (vim_strchr("$", (uint8_t)(*p)) != NULL) {
+    } else if (*p == '$') {
       return true;
     }
   }
@@ -1140,6 +1161,10 @@ static bool has_special_wildchar(char *p, int flags)
   FUNC_ATTR_NONNULL_ALL
 {
   for (; *p; p++) {
+    p += strcspn(p, "\r\n\\" SPECIAL_WILDCHAR);
+    if (*p == NUL) {
+      break;
+    }
     // Disallow line break characters.
     if (*p == '\r' || *p == '\n') {
       break;
@@ -1147,7 +1172,7 @@ static bool has_special_wildchar(char *p, int flags)
     // Allow for escaping.
     if (*p == '\\' && p[1] != NUL && p[1] != '\r' && p[1] != '\n') {
       p++;
-    } else if (vim_strchr(SPECIAL_WILDCHAR, (uint8_t)(*p)) != NULL) {
+    } else if (in_ascii_set(SPECIAL_WILDCHAR, (uint8_t)(*p))) {
       // Need a shell for curly braces only when including non-existing files.
       if (*p == '{' && !(flags & EW_NOTFOUND)) {
         continue;

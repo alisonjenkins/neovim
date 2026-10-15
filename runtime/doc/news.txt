@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Detecting wildcards, environment variables and shell quoting in a long path
+  skips over ordinary characters in bulk.
 
 PLUGINS
 
