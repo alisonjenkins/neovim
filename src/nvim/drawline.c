@@ -1561,6 +1561,18 @@ int win_line(win_T *wp, linenr_T lnum, int startrow, int endrow, int col_rows, b
     int vcol = wlv.vcol;
     StrCharInfo ci = utf_ptr2StrCharInfo(ptr);
     while (vcol < start_vcol) {
+      if (cstype == kCharsizeFast && !wp->w_p_list
+          && ci.chr.value >= 0x20 && ci.chr.value < 0x7f) {
+        // Skip a run of printable ASCII (one cell each), leaving at least one character for the
+        // code below, which sets "cs".
+        const size_t room = (size_t)(start_vcol - vcol - 1);
+        const size_t run = room > 0 ? ascii_print_run_long(ci.ptr, room + 1) : 0;
+        if (run > 1) {
+          vcol += (int)(run - 1);
+          ci = utf_ptr2StrCharInfo(ci.ptr + (run - 1));
+          continue;
+        }
+      }
       ClusterInfo cli = utf_ClusterInfo(ci);
       cs = win_charsize(cstype, vcol, ci.ptr, ci.chr.value, &csarg, cli.cells);
       vcol += cs.width;

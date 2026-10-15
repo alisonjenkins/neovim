@@ -93,6 +93,19 @@ static inline int win_linetabsize(win_T *wp, linenr_T lnum, char *line, colnr_T 
   }
 }
 
+/// Like ascii_print_run(), but returns 0 for a run shorter than four bytes without a function call,
+/// as such runs are not worth skipping.
+static inline size_t ascii_print_run_long(const char *s, size_t maxlen)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_ALWAYS_INLINE
+{
+  // The bytes are checked in order, so nothing after a NUL is read.
+  if ((uint8_t)(s[0] - 0x20) >= 0x5f || (uint8_t)(s[1] - 0x20) >= 0x5f
+      || (uint8_t)(s[2] - 0x20) >= 0x5f || (uint8_t)(s[3] - 0x20) >= 0x5f) {
+    return 0;
+  }
+  return ascii_print_run(s, maxlen);
+}
+
 /// Flags used by getvcol()
 enum {
   GETVCOL_END_EXCL_LBR = 1,
