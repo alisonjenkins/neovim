@@ -585,7 +585,7 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
   while (*path_end != NUL) {
     // May ignore a wildcard that has a backslash before it; it will
     // be removed by rem_backslash() or file_pat_to_reg_pat() below.
-    if (path_end >= path + wildoff && rem_backslash(path_end)) {
+    if (*path_end == '\\' && path_end >= path + wildoff && rem_backslash(path_end)) {
       *p++ = *path_end++;
     } else if (vim_ispathsep_nocolon(*path_end)) {
       if (e != NULL) {
@@ -602,6 +602,11 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
                    )
                ) {
       e = p;
+    }
+    if ((uint8_t)path_end[0] < 0x80 && (uint8_t)path_end[1] < 0x80) {
+      // ASCII not followed by a composing character: the common case.
+      *p++ = *path_end++;
+      continue;
     }
     int charlen = utfc_ptr2len(path_end);
     memcpy(p, path_end, (size_t)charlen);

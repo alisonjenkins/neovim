@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Wildcard expansion copies ASCII path components bytewise instead of
+  character by character.
 
 PLUGINS
 
