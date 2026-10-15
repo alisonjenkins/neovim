@@ -35,6 +35,64 @@
 
 /// Functions calculating horizontal size of text, when displayed in a window.
 
+/// Checks if any byte of "w" is not printable ASCII (0x20 to 0x7e).
+static inline bool word_has_nonprintable(uint64_t w)
+  FUNC_ATTR_CONST
+{
+  const uint64_t ones = 0x0101010101010101ULL;
+  const uint64_t highs = 0x8080808080808080ULL;
+  const uint64_t not7f = w ^ (ones * 0x7f);
+  // Bit hacks from "Bit Twiddling Hacks": a high bit is set for a byte >= 0x80, < 0x20 or == 0x7f.
+  return ((w & highs)
+          | ((w - ones * 0x20) & ~w & highs)
+          | ((not7f - ones) & ~not7f & highs)) != 0;
+}
+
+/// Gets the length of the run of printable ASCII (0x20 to 0x7e) at the start of "s", looking at no
+/// more than "maxlen" bytes and stopping at NUL.
+///
+/// Each byte of the run takes one cell, but a combining character can follow the last one: callers
+/// leave that one to the general code.
+size_t ascii_print_run(const char *s, size_t maxlen)
+{
+  // Most runs are short: check the first bytes one by one, which also stops at NUL.
+  size_t total = MIN(maxlen, 16);
+  for (size_t i = 0; i < total; i++) {
+    const uint8_t c = (uint8_t)s[i];
+    if (c < 0x20 || c >= 0x7f) {
+      return i;
+    }
+  }
+
+  size_t chunk_max = 64;
+  while (total < maxlen) {
+    // Find the NUL first, so that the word loads stay inside the string. The chunks grow, so
+    // that the work is proportional to the length of the run.
+    const size_t want = MIN(maxlen - total, chunk_max);
+    chunk_max = MIN(chunk_max * 2, 4096);
+    const size_t chunk = strnlen(s + total, want);
+    size_t i = 0;
+    for (; i + sizeof(uint64_t) <= chunk; i += sizeof(uint64_t)) {
+      uint64_t w;
+      memcpy(&w, s + total + i, sizeof(w));
+      if (word_has_nonprintable(w)) {
+        break;
+      }
+    }
+    for (; i < chunk; i++) {
+      const uint8_t c = (uint8_t)s[total + i];
+      if (c < 0x20 || c >= 0x7f) {
+        return total + i;
+      }
+    }
+    total += chunk;
+    if (chunk < want) {
+      break;  // reached the NUL
+    }
+  }
+  return total;
+}
+
 /// Return the number of cells the first char in "p" will take on the screen,
 /// taking into account the size of a tab.
 /// Also see getvcol()
@@ -535,6 +593,20 @@ int linesize_fast(CharsizeArg const *const csarg, int vcol_arg, colnr_T const le
 
   StrCharInfo ci = utf_ptr2StrCharInfo(line);
   while (ci.ptr - line < len && *ci.ptr != NUL) {
+    if (ci.chr.value >= 0x20 && ci.chr.value < 0x7f) {
+      // Skip a run of printable ASCII (one cell each), leaving its last character to the code below.
+      const size_t run = ascii_print_run_long(ci.ptr, (size_t)(len - (ci.ptr - line)));
+      if (run > 1) {
+        vcol += (int64_t)(run - 1);
+        if (vcol > MAXCOL) {
+          vcol_arg = MAXCOL;
+          break;
+        }
+        vcol_arg = (int)vcol;
+        ci = utf_ptr2StrCharInfo(ci.ptr + (run - 1));
+        continue;
+      }
+    }
     ClusterInfo cli = utf_ClusterInfo(ci);
     vcol += charsize_fast_impl(wp, ci.ptr, use_tabstop, vcol_arg, ci.chr.value, cli.cells).width;
     ci = cli.next;
@@ -603,6 +675,18 @@ void getvcol(win_T *wp, pos_T *pos, colnr_T *start, colnr_T *cursor, colnr_T *en
         // if cursor is at NUL, it is treated like 1 cell char
         char_size = (CharSize){ .width = 1 };
         break;
+      }
+      if (ci.chr.value >= 0x20 && ci.chr.value < 0x7f) {
+        // Skip a run of printable ASCII (one cell each), up to "end_col" and leaving its last
+        // character to the code below.
+        const colnr_T off = (colnr_T)(ci.ptr - line);
+        const size_t room = end_col > off ? (size_t)(end_col - off) : 0;
+        const size_t run = room > 0 ? ascii_print_run_long(ci.ptr, room + 1) : 0;
+        if (run > 1) {
+          vcol += (colnr_T)(run - 1);
+          ci = utf_ptr2StrCharInfo(ci.ptr + (run - 1));
+          continue;
+        }
       }
       ClusterInfo cli = utf_ClusterInfo(ci);
       char_size = charsize_fast_impl(wp, ci.ptr, use_tabstop, vcol, ci.chr.value, cli.cells);
