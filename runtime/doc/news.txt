@@ -186,6 +186,8 @@ OPTIONS
   results, skips the common prefix in bulk.
 • Splitting comma-separated options such as |'runtimepath'| copies each part
   in one go instead of character by character.
+• Wildcard expansion copies ASCII path components bytewise instead of
+  character by character.
 
 PLUGINS
 
