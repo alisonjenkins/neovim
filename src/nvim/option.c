@@ -7048,6 +7048,19 @@ size_t copy_option_part(char **option, char *buf, size_t maxlen, char *sep_chars
     buf[len++] = *p++;
   }
   while (*p != NUL && vim_strchr(sep_chars, (uint8_t)(*p)) == NULL) {
+    // Copy what comes before the next separator or backslash in one go.
+    const size_t run = strcspn(p, sep_chars);
+    const char *const bs = memchr(p, '\\', run);
+    const size_t plain = bs != NULL ? (size_t)(bs - p) : run;
+    if (plain > 0) {
+      if (len < maxlen - 1) {
+        const size_t n = MIN(plain, maxlen - 1 - len);
+        memcpy(buf + len, p, n);
+        len += n;
+      }
+      p += plain;
+      continue;
+    }
     // Skip backslash before a separator character and space.
     if (p[0] == '\\' && vim_strchr(sep_chars, (uint8_t)p[1]) != NULL) {
       p++;

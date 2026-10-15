@@ -107,6 +107,10 @@ typedef kvec_t(char *) CharVec;
 garray_T exestack = { 0, 0, sizeof(estack_T), 50, NULL };
 garray_T script_items = { 0, 0, sizeof(scriptitem_T *), 20, NULL };
 
+/// Script name (the script item's sn_name, not owned) => script ID. A name that was sourced more
+/// than once maps to the newest script ID, as the linear scan in find_script_by_name() finds it.
+static Map(path_t, int) script_name_map = MAP_INIT;
+
 /// The names of packages that once were loaded are remembered.
 static garray_T ga_loaded = { 0, 0, sizeof(char *), 4, NULL };
 
@@ -775,18 +779,21 @@ static bool push_path(RuntimeSearchPath *search_path, Set(String) *rtp_used, cha
   return false;
 }
 
-static void expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used, char *entry,
-                             bool after, size_t pos_in_rtp)
+/// Expands wildcards in a 'runtimepath' entry and adds the directories it matches.
+///
+/// @return  the number of matches, or -1 if the entry was added before.
+static int expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used, char *entry,
+                            bool after, size_t pos_in_rtp)
 {
   if (set_has(String, rtp_used, cstr_as_string(entry))) {
-    return;
+    return -1;
   }
 
   if (!*entry) {
     push_path(search_path, rtp_used, entry, after, pos_in_rtp);
   }
 
-  int num_files;
+  int num_files = 0;
   char **files;
   char *(pat[]) = { entry };
   if (gen_expand_wildcards(1, pat, &num_files, &files, EW_DIR | EW_NOBREAK) == OK) {
@@ -796,6 +803,7 @@ static void expand_rtp_entry(RuntimeSearchPath *search_path, Set(String) *rtp_us
     }
     FreeWild(num_files, files);
   }
+  return num_files;
 }
 
 static void expand_pack_entry(RuntimeSearchPath *search_path, Set(String) *rtp_used,
@@ -810,7 +818,10 @@ static void expand_pack_entry(RuntimeSearchPath *search_path, Set(String) *rtp_u
     }
     xstrlcpy(buf, pack_entry, sizeof buf);
     xstrlcpy(buf + pack_entry_len, start_pat[i], sizeof buf - pack_entry_len);
-    expand_rtp_entry(search_path, rtp_used, buf, false, pos_in_rtp);
+    if (expand_rtp_entry(search_path, rtp_used, buf, false, pos_in_rtp) == 0) {
+      // No package directory, so there can be no "after" directory in one either.
+      continue;
+    }
     size_t after_size = strlen(buf) + 7;
     char *after = xmallocz(after_size);
     xstrlcpy(after, buf, after_size);
@@ -1025,6 +1036,41 @@ static int gen_expand_wildcards_and_cb(int num_pat, char **pats, int flags, bool
   return OK;
 }
 
+/// Resolved absolute 'runtimepath' entries, only while add_pack_start_dirs() adds all the
+/// packages in one go. Every package would otherwise resolve (realpath) each 'runtimepath' entry
+/// in front of its own again.
+static Map(cstr_t, ptr_t) *rtp_ffname_cache = NULL;
+
+/// Resolves a 'runtimepath' entry (with a trailing path separator) with fix_fname().
+///
+/// @param[out] to_free  Set to the result if the caller has to free it, NULL if it is cached.
+///
+/// @return  the resolved entry, NULL on failure.
+static const char *rtp_entry_ffname(const char *entry, char **to_free)
+  FUNC_ATTR_NONNULL_ALL
+{
+  *to_free = NULL;
+  // The result of a relative entry depends on the current directory.
+  const bool cache = rtp_ffname_cache != NULL && path_is_absolute(entry);
+  if (cache) {
+    char *cached = map_get(cstr_t, ptr_t)(rtp_ffname_cache, entry);
+    if (cached != NULL) {
+      return cached;
+    }
+  }
+
+  char *ffname = fix_fname(entry);
+  if (ffname == NULL) {
+    return NULL;
+  }
+  if (cache) {
+    map_put(cstr_t, ptr_t)(rtp_ffname_cache, xstrdup(entry), ffname);
+  } else {
+    *to_free = ffname;
+  }
+  return ffname;
+}
+
 /// Add the package directory to 'runtimepath'
 ///
 /// @param fname the package path
@@ -1098,7 +1144,8 @@ static int add_pack_dir_to_rtp(char *fname, bool is_pack)
 
     if (insp == NULL) {
       add_pathsep(buf.data);
-      char *const rtp_ffname = fix_fname(buf.data);
+      char *rtp_ffname_to_free;
+      const char *const rtp_ffname = rtp_entry_ffname(buf.data, &rtp_ffname_to_free);
       if (rtp_ffname == NULL) {
         goto theend;
       }
@@ -1106,7 +1153,7 @@ static int add_pack_dir_to_rtp(char *fname, bool is_pack)
         // Insert "ffname" after this entry (and comma).
         insp = entry;
       }
-      xfree(rtp_ffname);
+      xfree(rtp_ffname_to_free);
     }
   }
 
@@ -1330,7 +1377,18 @@ static bool add_opt_pack_plugins(int num_fnames, char **fnames, bool all, void *
 /// Add all packages in the "start" directory to 'runtimepath'.
 void add_pack_start_dirs(void)
 {
+  Map(cstr_t, ptr_t) cache = MAP_INIT;
+  rtp_ffname_cache = &cache;
   do_in_path(p_pp, "", NULL, DIP_ALL + DIP_DIR, add_pack_start_dir, NULL);
+  rtp_ffname_cache = NULL;
+
+  const char *key;
+  void *value;
+  map_foreach(&cache, key, value, {
+    xfree((char *)key);
+    xfree(value);
+  });
+  map_destroy(cstr_t, &cache);
 }
 
 static bool pack_has_entries(char *buf)
@@ -2085,6 +2143,9 @@ scriptitem_T *new_script_item(char *const name, scid_T *const sid_out)
     si->sn_prof_on = false;
   }
   SCRIPT_ITEM(sid)->sn_name = name;
+  if (name != NULL) {
+    map_put(path_t, int)(&script_name_map, name, sid);
+  }
   return SCRIPT_ITEM(sid);
 }
 
@@ -2512,6 +2573,25 @@ bool script_is_lua(scid_T sid)
 int find_script_by_name(char *name)
 {
   assert(script_items.ga_len >= 0);
+
+#ifdef CASE_INSENSITIVE_FILENAME
+  const bool hash_ic = true;
+#else
+  const bool hash_ic = false;
+#endif
+  // The map hashes and compares like path_cmp() with the platform's default 'fileignorecase'.
+  if (p_fic == hash_ic) {
+    const int sid = map_get(path_t, int)(&script_name_map, name);
+    if (sid == 0) {
+      return -1;
+    }
+    // A match that path_equal() rejects (URL names differing in a trailing slash) is rare:
+    // let the scan decide.
+    if (path_equal(SCRIPT_ITEM(sid)->sn_name, name, kPathCmpLiteral)) {
+      return sid;
+    }
+  }
+
   for (int sid = script_items.ga_len; sid > 0; sid--) {
     // We used to check inode here, but that doesn't work:
     // - If a script is edited and written, it may get a different
@@ -2626,6 +2706,7 @@ void free_scriptnames(void)
   } while (0) \
 
   GA_DEEP_CLEAR(&script_items, scriptitem_T *, FREE_SCRIPTNAME);
+  map_destroy(path_t, &script_name_map);
 }
 #endif
 

@@ -196,6 +196,71 @@ describe('path.c', function()
       neq(0, path_cmp('foo', 'foo//', 5))
       neq(0, path_cmp('foo/', 'foo//', 5))
     end)
+
+    describe('with a long common prefix', function()
+      local dir = '/home/user/.local/share/nvim/site/pack/plugins/start/'
+      local max = 4096
+
+      -- Case sensitive, whatever the default of 'fileignorecase' is.
+      local function cs_cmp(a, b, maxlen)
+        return cimp.path_cmp(false, to_cstr(a), to_cstr(b), maxlen)
+      end
+
+      itp('orders by the first byte that differs', function()
+        eq(0, cs_cmp(dir .. 'a', dir .. 'a', max))
+        eq(-1, cs_cmp(dir .. 'a', dir .. 'b', max))
+        eq(1, cs_cmp(dir .. 'b', dir .. 'a', max))
+        eq(-1, cs_cmp(dir .. 'ab', dir .. 'abc', max))
+        eq(1, cs_cmp(dir .. 'abc', dir .. 'ab', max))
+      end)
+
+      itp('sorts a path separator before any other character', function()
+        eq(-1, cs_cmp(dir .. 'foo/bar', dir .. 'foobar', max))
+        eq(1, cs_cmp(dir .. 'foobar', dir .. 'foo/bar', max))
+      end)
+
+      itp('ignores a single trailing path sep', function()
+        eq(0, cs_cmp(dir .. 'foo', dir .. 'foo/', max))
+        neq(0, cs_cmp(dir .. 'foo', dir .. 'foo//', max))
+      end)
+
+      itp('honours maxlen inside, at the end of and past the common prefix', function()
+        eq(0, cs_cmp(dir .. 'a', dir .. 'b', #dir - 1))
+        eq(0, cs_cmp(dir .. 'a', dir .. 'b', #dir))
+        neq(0, cs_cmp(dir .. 'a', dir .. 'b', #dir + 1))
+        eq(0, cs_cmp(dir .. 'a', dir .. 'a', #dir + 1))
+        eq(0, cs_cmp(dir .. 'a', dir .. 'b', 0))
+      end)
+
+      itp('compares non-ASCII characters after the prefix', function()
+        eq(0, cs_cmp(dir .. 'é', dir .. 'é', max))
+        neq(0, cs_cmp(dir .. 'é', dir .. 'è', max))
+        neq(0, cs_cmp(dir .. 'é', dir .. 'e', max))
+        neq(0, cs_cmp(dir .. 'e', dir .. 'é', max))
+        neq(0, cs_cmp(dir .. 'aé', dir .. 'a', max))
+      end)
+
+      itp('compares the base character only when ignoring case', function()
+        local function ic(a, b)
+          return cimp.path_cmp(true, to_cstr(a), to_cstr(b), max)
+        end
+        eq(0, ic(dir .. 'Foo', dir .. 'fOO'))
+        eq(0, ic(dir .. 'e\xCC\x81x', dir .. 'e\xCC\x88x'))
+        eq(0, ic(dir .. 'e\xCC\x81', dir .. 'e'))
+        neq(0, ic(dir .. 'foo', dir .. 'fob'))
+        neq(0, cs_cmp(dir .. 'Foo', dir .. 'foo', max))
+      end)
+
+      itp('does not split a character from its composing characters', function()
+        local function ic(a, b, maxlen)
+          return cimp.path_cmp(true, to_cstr(a), to_cstr(b), maxlen or max)
+        end
+        eq(0, ic(dir .. 'x\xCC\x81', dir .. 'x\xCC\x88y', #dir + 1))
+        eq(0, ic(dir .. 'x\xCC\x81y', dir .. 'x\xCC\x88y'))
+        neq(0, ic(dir .. 'x\xCC\x81y', dir .. 'x\xCC\x88z'))
+        neq(0, ic(dir .. 'x\xCC\x81', dir .. 'xy'))
+      end)
+    end)
   end)
 
   describe('path_tail', function()

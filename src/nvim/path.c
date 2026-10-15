@@ -487,6 +487,19 @@ char *save_abs_path(const char *name)
   return TO_SLASH_SAVE(name);
 }
 
+/// Like `vim_strchr(set, c) != NULL`, for a `set` of ASCII characters and a byte `c`.  Short sets
+/// are cheaper to walk than to call strchr() on.
+static inline bool in_ascii_set(const char *set, uint8_t c)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  for (; *set != NUL; set++) {
+    if ((uint8_t)(*set) == c) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Checks if a path has an unescaped wildcard requiring expansion (path_expand).
 /// @param p The path to expand.
 /// @param all Also detect chars requiring special handling:
@@ -500,15 +513,19 @@ bool path_has_wildcard(const char *p, bool all)
   FUNC_ATTR_NONNULL_ALL
 {
   char *wildcards = all ? PATH_ALL_WILDCARDS : PATH_ESC_WILDCARDS;
+  const char *stops = all ? "\\" PATH_ALL_WILDCARDS "~" : "\\" PATH_ESC_WILDCARDS;
   for (; *p; p++) {
+    p += strcspn(p, stops);
+    if (*p == NUL) {
+      break;
+    }
 #ifdef UNIX
     if (p[0] == '\\' && p[1] != NUL) {
       p++;
       continue;
     }
 #endif
-    if (vim_strchr(wildcards, (uint8_t)(*p)) != NULL
-        || (all && p[0] == '~' && p[1] != NUL)) {
+    if (in_ascii_set(wildcards, (uint8_t)(*p)) || (all && p[0] == '~' && p[1] != NUL)) {
       return true;
     }
   }
@@ -552,6 +569,34 @@ static const char *scandir_next_with_dots(Directory *dir)
   return os_scandir_next(dir);
 }
 
+enum { STAR_SUFFIX_MAX = 32, };  ///< longest "*suffix" pattern is_star_suffix_pattern() accepts
+
+/// Return true if the file pattern in [s, e) is "*" or "*" followed by a plain ASCII suffix, such
+/// as "*.vim": it then matches the names that end in that suffix.
+static bool is_star_suffix_pattern(const char *s, const char *e)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  if (e == s || *s != '*' || (size_t)(e - s) > STAR_SUFFIX_MAX) {
+    return false;
+  }
+  for (const char *c = s + 1; c < e; c++) {
+    if (!ASCII_ISALNUM(*c) && *c != '_' && *c != '.' && *c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool name_has_suffix(const char *name, const char *suffix, size_t suffix_len)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  if (suffix_len == 0) {
+    return true;
+  }
+  const size_t name_len = strlen(name);
+  return name_len >= suffix_len && memcmp(name + name_len - suffix_len, suffix, suffix_len) == 0;
+}
+
 /// Implementation of path_expand().
 ///
 /// Chars before `path + wildoff` do not get expanded.
@@ -585,7 +630,7 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
   while (*path_end != NUL) {
     // May ignore a wildcard that has a backslash before it; it will
     // be removed by rem_backslash() or file_pat_to_reg_pat() below.
-    if (path_end >= path + wildoff && rem_backslash(path_end)) {
+    if (*path_end == '\\' && path_end >= path + wildoff && rem_backslash(path_end)) {
       *p++ = *path_end++;
     } else if (vim_ispathsep_nocolon(*path_end)) {
       if (e != NULL) {
@@ -595,13 +640,18 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
     } else if (path_end >= path + wildoff
                // "~" not included here, we want to treat it as literal.
                // "~/", "~user/" and env expansion are already handled in `gen_expand_wildcards`.
-               && (vim_strchr(PATH_ESC_WILDCARDS, (uint8_t)(*path_end)) != NULL
+               && (in_ascii_set(PATH_ESC_WILDCARDS, (uint8_t)(*path_end))
 #ifndef MSWIN
                    || (!p_fic && (flags & EW_ICASE) && mb_isalpha(utf_ptr2char(path_end)))
 #endif
                    )
                ) {
       e = p;
+    }
+    if ((uint8_t)path_end[0] < 0x80 && (uint8_t)path_end[1] < 0x80) {
+      // ASCII not followed by a composing character: the common case.
+      *p++ = *path_end++;
+      continue;
     }
     int charlen = utfc_ptr2len(path_end);
     memcpy(p, path_end, (size_t)charlen);
@@ -629,35 +679,49 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
     }
   }
 
-  // convert the file pattern to a regexp pattern
   int starts_with_dot = *s == '.';
-  char *pat = file_pat_to_reg_pat(s, e, NULL, false);
-  if (pat == NULL) {
-    xfree(buf);
-    return 0;
-  }
-
-  // compile the regexp into a program
   regmatch_T regmatch;
+  regmatch.regprog = NULL;
+  // "*" and "*.ext" are by far the most common patterns: they need no regexp.
+  bool star_suffix = false;
 #ifdef UNIX
-  // Ignore case if given 'wildignorecase', else respect 'fileignorecase'.
-  regmatch.rm_ic = (flags & EW_ICASE) || p_fic;
-#else
-  regmatch.rm_ic = true;  // Always ignore case on Windows.
+  star_suffix = !(flags & (EW_ICASE | EW_NOTWILD)) && !p_fic && is_star_suffix_pattern(s, e);
 #endif
-  if (flags & (EW_NOERROR | EW_NOTWILD)) {
-    emsg_silent++;
-  }
-  bool nobreak = (flags & EW_NOBREAK);
-  regmatch.regprog = vim_regcomp(pat, RE_MAGIC | (nobreak ? RE_NOBREAK : 0));
-  if (flags & (EW_NOERROR | EW_NOTWILD)) {
-    emsg_silent--;
-  }
-  xfree(pat);
+  if (!star_suffix) {
+    // convert the file pattern to a regexp pattern
+    char *pat = file_pat_to_reg_pat(s, e, NULL, false);
+    if (pat == NULL) {
+      xfree(buf);
+      return 0;
+    }
 
-  if (regmatch.regprog == NULL && (flags & EW_NOTWILD) == 0) {
-    xfree(buf);
-    return 0;
+    // compile the regexp into a program
+#ifdef UNIX
+    // Ignore case if given 'wildignorecase', else respect 'fileignorecase'.
+    regmatch.rm_ic = (flags & EW_ICASE) || p_fic;
+#else
+    regmatch.rm_ic = true;  // Always ignore case on Windows.
+#endif
+    if (flags & (EW_NOERROR | EW_NOTWILD)) {
+      emsg_silent++;
+    }
+    bool nobreak = (flags & EW_NOBREAK);
+    regmatch.regprog = vim_regcomp(pat, RE_MAGIC | (nobreak ? RE_NOBREAK : 0));
+    if (flags & (EW_NOERROR | EW_NOTWILD)) {
+      emsg_silent--;
+    }
+    xfree(pat);
+
+    if (regmatch.regprog == NULL && (flags & EW_NOTWILD) == 0) {
+      xfree(buf);
+      return 0;
+    }
+  }
+  // "s" is overwritten with file names below, keep the suffix.
+  char suffix[STAR_SUFFIX_MAX + 1] = "";
+  const size_t suffix_len = star_suffix ? (size_t)(e - s) - 1 : 0;
+  if (star_suffix) {
+    memcpy(suffix, s + 1, suffix_len);
   }
 
   size_t len = (size_t)(s - buf);
@@ -685,7 +749,8 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
            || ((flags & EW_DODOT)
                && name[1] != NUL
                && (name[1] != '.' || name[2] != NUL)))
-          && ((regmatch.regprog != NULL && vim_regexec(&regmatch, name, 0))
+          && ((star_suffix && name_has_suffix(name, suffix, suffix_len))
+              || (regmatch.regprog != NULL && vim_regexec(&regmatch, name, 0))
               || ((flags & EW_NOTWILD)
                   && path_cmp(p_fic, path + len, name, (size_t)(e - s)) == 0))) {
         len += (size_t)vim_snprintf(s, buflen - len, "%s", name);
@@ -719,10 +784,11 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
           if (*path_end != NUL) {
             backslash_halve(buf + len + 1);
           }
-          // add existing file or symbolic link
-          if ((flags & EW_ALLLINKS)
-              ? os_fileinfo_link(buf, &file_info)
-              : os_path_exists(buf)) {
+          // add existing file or symbolic link; addfile() checks that, unless EW_NOTFOUND
+          if (!(flags & EW_NOTFOUND)
+              || ((flags & EW_ALLLINKS)
+                  ? os_fileinfo_link(buf, &file_info)
+                  : os_path_exists(buf))) {
             addfile(gap, buf, flags);
           }
         }
@@ -1117,15 +1183,31 @@ static int expand_in_path(garray_T *const gap, char *const pattern, const int fl
   return gap->ga_len;
 }
 
+/// Return true if "p" has none of the characters gen_expand_wildcards() gives a meaning to:
+/// wildcards, quotes, backticks, "$", "~", backslashes and line breaks.  Such a pattern is a
+/// plain file name that only has to be looked up.
+///
+/// Deliberately a superset of what has_env_var(), has_special_wildchar() and
+/// path_has_wildcard() look for, so "true" means all of them are false.
+static bool path_is_plain(const char *p)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  return p[strcspn(p, "\\*?[{`'$~\r\n")] == NUL;
+}
+
 /// Return true if "p" contains what looks like an environment variable.
 /// Allowing for escaping.
 static bool has_env_var(char *p)
   FUNC_ATTR_NONNULL_ALL
 {
   for (; *p; p++) {
+    p += strcspn(p, "\\$");
+    if (*p == NUL) {
+      break;
+    }
     if (*p == '\\' && p[1] != NUL) {
       p++;
-    } else if (vim_strchr("$", (uint8_t)(*p)) != NULL) {
+    } else if (*p == '$') {
       return true;
     }
   }
@@ -1140,6 +1222,10 @@ static bool has_special_wildchar(char *p, int flags)
   FUNC_ATTR_NONNULL_ALL
 {
   for (; *p; p++) {
+    p += strcspn(p, "\r\n\\" SPECIAL_WILDCHAR);
+    if (*p == NUL) {
+      break;
+    }
     // Disallow line break characters.
     if (*p == '\r' || *p == '\n') {
       break;
@@ -1147,7 +1233,7 @@ static bool has_special_wildchar(char *p, int flags)
     // Allow for escaping.
     if (*p == '\\' && p[1] != NUL && p[1] != '\r' && p[1] != '\n') {
       p++;
-    } else if (vim_strchr(SPECIAL_WILDCHAR, (uint8_t)(*p)) != NULL) {
+    } else if (in_ascii_set(SPECIAL_WILDCHAR, (uint8_t)(*p))) {
       // Need a shell for curly braces only when including non-existing files.
       if (*p == '{' && !(flags & EW_NOTFOUND)) {
         continue;
@@ -1211,7 +1297,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
   // avoids starting the shell for each argument separately.
   // For `=expr` do use the internal function.
   for (int i = 0; i < num_pat; i++) {
-    if (has_special_wildchar(pat[i], flags)
+    if (!path_is_plain(pat[i]) && has_special_wildchar(pat[i], flags)
         && !(vim_backtick(pat[i]) && pat[i][1] == '=')) {
       return os_expand_wildcards(num_pat, pat, num_file, file, flags);
     }
@@ -1226,6 +1312,8 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
   for (int i = 0; i < num_pat && !got_int; i++) {
     add_pat = -1;
     p = pat[i];
+    // A plain name has nothing to expand: it is added as is below when it exists.
+    const bool plain = !(flags & EW_ICASE) && path_is_plain(p);
 
     if (vim_backtick(p)) {
       add_pat = expand_backtick(&ga, p, flags);
@@ -1236,7 +1324,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
         *file = NULL;
         return FAIL;
       }
-    } else {
+    } else if (!plain) {
       // First expand environment variables, "~/" and "~user/".
       if ((has_env_var(p) && !(flags & EW_NOTENV)) || *p == '~') {
         p = expand_env_save_opt(p, true, (char *)PATH_ESC_WILDCARDS);
@@ -1290,7 +1378,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
     }
 
     if (add_pat == -1 || (add_pat == 0 && (flags & EW_NOTFOUND))) {
-      char *t = backslash_halve_save(p);
+      char *t = plain ? xstrdup(p) : backslash_halve_save(p);
 
       // When EW_NOTFOUND is used, always add files and dirs.  Makes
       // "vim c:/" work.
@@ -1461,14 +1549,10 @@ char *path_to_slash_save(const char *p)
 void addfile(garray_T *gap, char *f, int flags)
   FUNC_ATTR_NONNULL_ALL
 {
-  bool isdir;
   FileInfo file_info;
 
-  // if the file/dir/link doesn't exist, may not add it
-  if (!(flags & EW_NOTFOUND)
-      && ((flags & EW_ALLLINKS)
-          ? !os_fileinfo_link(f, &file_info)
-          : !os_path_exists(f))) {
+  // if the link doesn't exist, may not add it
+  if (!(flags & EW_NOTFOUND) && (flags & EW_ALLLINKS) && !os_fileinfo_link(f, &file_info)) {
     return;
   }
 
@@ -1479,7 +1563,12 @@ void addfile(garray_T *gap, char *f, int flags)
   }
 #endif
 
-  isdir = os_isdir(f);
+  // One stat() tells whether the file exists and whether it is a directory.
+  const int32_t mode = os_getperm(f);
+  if (mode < 0 && !(flags & (EW_NOTFOUND | EW_ALLLINKS))) {
+    return;
+  }
+  const bool isdir = mode >= 0 && S_ISDIR(mode);
   if ((isdir && !(flags & EW_DIR)) || (!isdir && !(flags & EW_FILE))) {
     return;
   }
@@ -1965,6 +2054,19 @@ int path_cmp(bool ic, const char *p, const char *q, size_t maxlen)
     *pp += 2;  // advance the pointer of the explicit one, to skip the drive
   }
 #endif
+
+  // Paths often share a long directory prefix.  Equal ASCII bytes fold to the same character and
+  // have length 1, so step over them without folding.
+  size_t same = 0;
+  while (same < maxlen - len && p[same] == q[same] && (int8_t)p[same] > 0) {
+    same++;
+  }
+  if (same > 0 && same < maxlen - len && ((int8_t)p[same] < 0 || (int8_t)q[same] < 0)) {
+    same--;  // the last one is followed by a possibly composing character
+  }
+  p += same;
+  q += same;
+  len += same;
 
   for (int i = 0, j = 0; len < maxlen; len += (size_t)i) {
     c1 = path_fold_char(ic, p, &i);

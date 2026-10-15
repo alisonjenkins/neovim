@@ -178,6 +178,26 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Wildcard expansion (|glob()|, |:runtime|, |'runtimepath'| lookups) checks
+  each match with one `stat()` instead of three.
+• Detecting wildcards, environment variables and shell quoting in a long path
+  skips over ordinary characters in bulk.
+• Comparing paths that share a long directory prefix, as when sorting |glob()|
+  results, skips the common prefix in bulk.
+• Splitting comma-separated options such as |'runtimepath'| copies each part
+  in one go instead of character by character.
+• Wildcard expansion copies ASCII path components bytewise instead of
+  character by character.
+• Expanding a file name without wildcards (as |:runtime| and |'runtimepath'|
+  lookups do for most names) scans it once instead of four times.
+• |glob()|, |:runtime| and |'runtimepath'| lookups match the patterns "*" and
+  "*.ext" without compiling a regexp.
+• Building the runtime search path does not look for the "after" directories
+  of start packages in 'packpath' entries that have no start package.
+• |:source| and |:runtime| find a script they loaded before by its name in a
+  hash map instead of comparing the name with every loaded script.
+• Adding the start packages of many 'packpath' directories resolves each
+  'runtimepath' entry once, instead of once per package.
 
 PLUGINS
 
