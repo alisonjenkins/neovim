@@ -1147,6 +1147,19 @@ static const char *win_line_skip_columns(win_T *wp, winlinevars_T *wlv, char **l
   int vcol = wlv->vcol;  // Includes hidden cells (see CharsizeArg.extconceal_off).
   StrCharInfo ci = utf_ptr2StrCharInfo(ptr);
   while (vcol - csarg.extconceal_off < start_vcol) {
+    if (cstype == kCharsizeFast && !wp->w_p_list
+        && ci.chr.value >= 0x20 && ci.chr.value < 0x7f) {
+      // Skip a run of printable ASCII (one cell each), leaving at least one character for the
+      // code below, which sets "cs". kCharsizeFast means no extmark conceal, so
+      // "extconceal_off" is 0 here.
+      const size_t room = (size_t)(start_vcol - vcol - 1);
+      const size_t run = room > 0 ? ascii_print_run_long(ci.ptr, room + 1) : 0;
+      if (run > 1) {
+        vcol += (int)(run - 1);
+        ci = utf_ptr2StrCharInfo(ci.ptr + (run - 1));
+        continue;
+      }
+    }
     ClusterInfo cli = utf_ClusterInfo(ci);
     cs = win_charsize(cstype, vcol, ci.ptr, ci.chr.value, &csarg, cli.cells);
     vcol += cs.width;

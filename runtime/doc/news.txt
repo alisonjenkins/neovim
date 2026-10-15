@@ -549,6 +549,8 @@ PERFORMANCE
 • |:global| is up to 20x faster on large buffers.
 • |CTRL-C| responds much faster in various long-running loops (e.g. Vimscript
   |:for| loop calling slow functions).
+• Finding a column in a very long line of ASCII text is faster: |virtcol()|,
+  |strdisplaywidth()| and scrolling horizontally skip runs of printable ASCII.
 
 PLUGINS
 
