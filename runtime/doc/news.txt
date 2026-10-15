@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Expanding a file name without wildcards (as |:runtime| and |'runtimepath'|
+  lookups do for most names) scans it once instead of four times.
 
 PLUGINS
 
