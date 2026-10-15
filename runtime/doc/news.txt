@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• |:source| and |:runtime| find a script they loaded before by its name in a
+  hash map instead of comparing the name with every loaded script.
 
 PLUGINS
 

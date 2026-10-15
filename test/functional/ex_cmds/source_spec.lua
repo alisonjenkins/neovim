@@ -1,7 +1,8 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
-local describe, it, before_each, finally = t.describe, t.it, t.before_each, t.finally
+local describe, it, before_each, after_each, finally =
+  t.describe, t.it, t.before_each, t.after_each, t.finally
 local command = n.command
 local insert = n.insert
 local eq = t.eq
@@ -349,4 +350,83 @@ it('$HOME is not shortened in filepath in v:stacktrace from sourced file', funct
     endtry
   ]])
   eq(filepath, n.eval('g:stacktrace[-1].filepath'))
+end)
+
+describe(':source finds an already loaded script by name', function()
+  local dir = 'Xsourcedir'
+
+  before_each(function()
+    clear()
+    mkdir(dir)
+  end)
+
+  after_each(function()
+    rmdir(dir)
+  end)
+
+  local function script_ids()
+    local ids = {}
+    for _, info in ipairs(fn.getscriptinfo({ name = dir })) do
+      ids[info.name:match('[^/]+$')] = info.sid
+    end
+    return ids
+  end
+
+  it('sourcing a script again reuses its script ID and script-local variables', function()
+    local file = dir .. '/count.vim'
+    write_file(file, 'let s:n = get(s:, "n", 0) + 1\nlet g:n = s:n\n')
+    command('source ' .. file)
+    local sid = script_ids()['count.vim']
+    eq(1, eval('g:n'))
+    command('source ' .. file)
+    command('source ' .. vim.fs.abspath(file))
+    eq(3, eval('g:n'))
+    eq(sid, script_ids()['count.vim'])
+    eq(1, #fn.getscriptinfo({ name = 'count.vim' }))
+  end)
+
+  it('keeps scripts with different names apart, in any quantity', function()
+    local count = 200
+    for i = 1, count do
+      write_file(('%s/s%d.vim'):format(dir, i), ('let g:s%d = expand("<SID>")'):format(i))
+      command(('source %s/s%d.vim'):format(dir, i))
+    end
+    local ids = script_ids()
+    local seen = {}
+    for i = 1, count do
+      local sid = ids[('s%d.vim'):format(i)]
+      eq(('<SNR>%d_'):format(sid), eval(('g:s%d'):format(i)))
+      eq(nil, seen[sid])
+      seen[sid] = true
+    end
+    -- Sourcing each again does not create new script items.
+    for i = 1, count do
+      command(('source %s/s%d.vim'):format(dir, i))
+    end
+    eq(ids, script_ids())
+  end)
+
+  it("finds the script whatever 'fileignorecase' is", function()
+    local file = dir .. '/fic.vim'
+    write_file(file, 'let g:f = get(g:, "f", 0) + 1\n')
+    command('source ' .. file)
+    local sid = script_ids()['fic.vim']
+    command('set fileignorecase')
+    command('source ' .. file)
+    command('set nofileignorecase')
+    command('source ' .. file)
+    eq(3, eval('g:f'))
+    eq(sid, script_ids()['fic.vim'])
+  end)
+
+  it('treats a deleted and recreated script as the same script', function()
+    local file = dir .. '/recreated.vim'
+    write_file(file, 'let g:r = expand("<SID>")\n')
+    command('source ' .. file)
+    local first = eval('g:r')
+    os.remove(file)
+    write_file(file, 'let g:r = expand("<SID>")\n')
+    command('source ' .. file)
+    eq(first, eval('g:r'))
+  end)
 end)
