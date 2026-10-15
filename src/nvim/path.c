@@ -552,6 +552,34 @@ static const char *scandir_next_with_dots(Directory *dir)
   return os_scandir_next(dir);
 }
 
+enum { STAR_SUFFIX_MAX = 32, };  ///< longest "*suffix" pattern is_star_suffix_pattern() accepts
+
+/// Return true if the file pattern in [s, e) is "*" or "*" followed by a plain ASCII suffix, such
+/// as "*.vim": it then matches the names that end in that suffix.
+static bool is_star_suffix_pattern(const char *s, const char *e)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  if (e == s || *s != '*' || (size_t)(e - s) > STAR_SUFFIX_MAX) {
+    return false;
+  }
+  for (const char *c = s + 1; c < e; c++) {
+    if (!ASCII_ISALNUM(*c) && *c != '_' && *c != '.' && *c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool name_has_suffix(const char *name, const char *suffix, size_t suffix_len)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  if (suffix_len == 0) {
+    return true;
+  }
+  const size_t name_len = strlen(name);
+  return name_len >= suffix_len && memcmp(name + name_len - suffix_len, suffix, suffix_len) == 0;
+}
+
 /// Implementation of path_expand().
 ///
 /// Chars before `path + wildoff` do not get expanded.
@@ -629,35 +657,49 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
     }
   }
 
-  // convert the file pattern to a regexp pattern
   int starts_with_dot = *s == '.';
-  char *pat = file_pat_to_reg_pat(s, e, NULL, false);
-  if (pat == NULL) {
-    xfree(buf);
-    return 0;
-  }
-
-  // compile the regexp into a program
   regmatch_T regmatch;
+  regmatch.regprog = NULL;
+  // "*" and "*.ext" are by far the most common patterns: they need no regexp.
+  bool star_suffix = false;
 #ifdef UNIX
-  // Ignore case if given 'wildignorecase', else respect 'fileignorecase'.
-  regmatch.rm_ic = (flags & EW_ICASE) || p_fic;
-#else
-  regmatch.rm_ic = true;  // Always ignore case on Windows.
+  star_suffix = !(flags & (EW_ICASE | EW_NOTWILD)) && !p_fic && is_star_suffix_pattern(s, e);
 #endif
-  if (flags & (EW_NOERROR | EW_NOTWILD)) {
-    emsg_silent++;
-  }
-  bool nobreak = (flags & EW_NOBREAK);
-  regmatch.regprog = vim_regcomp(pat, RE_MAGIC | (nobreak ? RE_NOBREAK : 0));
-  if (flags & (EW_NOERROR | EW_NOTWILD)) {
-    emsg_silent--;
-  }
-  xfree(pat);
+  if (!star_suffix) {
+    // convert the file pattern to a regexp pattern
+    char *pat = file_pat_to_reg_pat(s, e, NULL, false);
+    if (pat == NULL) {
+      xfree(buf);
+      return 0;
+    }
 
-  if (regmatch.regprog == NULL && (flags & EW_NOTWILD) == 0) {
-    xfree(buf);
-    return 0;
+    // compile the regexp into a program
+#ifdef UNIX
+    // Ignore case if given 'wildignorecase', else respect 'fileignorecase'.
+    regmatch.rm_ic = (flags & EW_ICASE) || p_fic;
+#else
+    regmatch.rm_ic = true;  // Always ignore case on Windows.
+#endif
+    if (flags & (EW_NOERROR | EW_NOTWILD)) {
+      emsg_silent++;
+    }
+    bool nobreak = (flags & EW_NOBREAK);
+    regmatch.regprog = vim_regcomp(pat, RE_MAGIC | (nobreak ? RE_NOBREAK : 0));
+    if (flags & (EW_NOERROR | EW_NOTWILD)) {
+      emsg_silent--;
+    }
+    xfree(pat);
+
+    if (regmatch.regprog == NULL && (flags & EW_NOTWILD) == 0) {
+      xfree(buf);
+      return 0;
+    }
+  }
+  // "s" is overwritten with file names below, keep the suffix.
+  char suffix[STAR_SUFFIX_MAX + 1] = "";
+  const size_t suffix_len = star_suffix ? (size_t)(e - s) - 1 : 0;
+  if (star_suffix) {
+    memcpy(suffix, s + 1, suffix_len);
   }
 
   size_t len = (size_t)(s - buf);
@@ -685,7 +727,8 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
            || ((flags & EW_DODOT)
                && name[1] != NUL
                && (name[1] != '.' || name[2] != NUL)))
-          && ((regmatch.regprog != NULL && vim_regexec(&regmatch, name, 0))
+          && ((star_suffix && name_has_suffix(name, suffix, suffix_len))
+              || (regmatch.regprog != NULL && vim_regexec(&regmatch, name, 0))
               || ((flags & EW_NOTWILD)
                   && path_cmp(p_fic, path + len, name, (size_t)(e - s)) == 0))) {
         len += (size_t)vim_snprintf(s, buflen - len, "%s", name);
