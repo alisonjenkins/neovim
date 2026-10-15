@@ -1140,6 +1140,18 @@ static int expand_in_path(garray_T *const gap, char *const pattern, const int fl
   return gap->ga_len;
 }
 
+/// Return true if "p" has none of the characters gen_expand_wildcards() gives a meaning to:
+/// wildcards, quotes, backticks, "$", "~", backslashes and line breaks.  Such a pattern is a
+/// plain file name that only has to be looked up.
+///
+/// Deliberately a superset of what has_env_var(), has_special_wildchar() and
+/// path_has_wildcard() look for, so "true" means all of them are false.
+static bool path_is_plain(const char *p)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
+{
+  return p[strcspn(p, "\\*?[{`'$~\r\n")] == NUL;
+}
+
 /// Return true if "p" contains what looks like an environment variable.
 /// Allowing for escaping.
 static bool has_env_var(char *p)
@@ -1242,7 +1254,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
   // avoids starting the shell for each argument separately.
   // For `=expr` do use the internal function.
   for (int i = 0; i < num_pat; i++) {
-    if (has_special_wildchar(pat[i], flags)
+    if (!path_is_plain(pat[i]) && has_special_wildchar(pat[i], flags)
         && !(vim_backtick(pat[i]) && pat[i][1] == '=')) {
       return os_expand_wildcards(num_pat, pat, num_file, file, flags);
     }
@@ -1257,6 +1269,8 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
   for (int i = 0; i < num_pat && !got_int; i++) {
     add_pat = -1;
     p = pat[i];
+    // A plain name has nothing to expand: it is added as is below when it exists.
+    const bool plain = !(flags & EW_ICASE) && path_is_plain(p);
 
     if (vim_backtick(p)) {
       add_pat = expand_backtick(&ga, p, flags);
@@ -1267,7 +1281,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
         *file = NULL;
         return FAIL;
       }
-    } else {
+    } else if (!plain) {
       // First expand environment variables, "~/" and "~user/".
       if ((has_env_var(p) && !(flags & EW_NOTENV)) || *p == '~') {
         p = expand_env_save_opt(p, true, (char *)PATH_ESC_WILDCARDS);
@@ -1321,7 +1335,7 @@ int gen_expand_wildcards(int num_pat, char **pat, int *num_file, char ***file, i
     }
 
     if (add_pat == -1 || (add_pat == 0 && (flags & EW_NOTFOUND))) {
-      char *t = backslash_halve_save(p);
+      char *t = plain ? xstrdup(p) : backslash_halve_save(p);
 
       // When EW_NOTFOUND is used, always add files and dirs.  Makes
       // "vim c:/" work.

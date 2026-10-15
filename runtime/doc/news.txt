@@ -188,6 +188,8 @@ OPTIONS
   in one go instead of character by character.
 • Wildcard expansion copies ASCII path components bytewise instead of
   character by character.
+• Expanding a file name without wildcards (as |:runtime| and |'runtimepath'|
+  lookups do for most names) scans it once instead of four times.
 
 PLUGINS
 
