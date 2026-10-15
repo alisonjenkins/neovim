@@ -178,6 +178,8 @@ OPTIONS
   'titlestring', and 'iconstring'.
 • 'rulerformat' can no longer be set empty, the new default expression will be
   restored instead.
+• Adding the start packages of many 'packpath' directories resolves each
+  'runtimepath' entry once, instead of once per package.
 
 PLUGINS
 

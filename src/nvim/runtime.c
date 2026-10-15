@@ -1025,6 +1025,41 @@ static int gen_expand_wildcards_and_cb(int num_pat, char **pats, int flags, bool
   return OK;
 }
 
+/// Resolved absolute 'runtimepath' entries, only while add_pack_start_dirs() adds all the
+/// packages in one go. Every package would otherwise resolve (realpath) each 'runtimepath' entry
+/// in front of its own again.
+static Map(cstr_t, ptr_t) *rtp_ffname_cache = NULL;
+
+/// Resolves a 'runtimepath' entry (with a trailing path separator) with fix_fname().
+///
+/// @param[out] to_free  Set to the result if the caller has to free it, NULL if it is cached.
+///
+/// @return  the resolved entry, NULL on failure.
+static const char *rtp_entry_ffname(const char *entry, char **to_free)
+  FUNC_ATTR_NONNULL_ALL
+{
+  *to_free = NULL;
+  // The result of a relative entry depends on the current directory.
+  const bool cache = rtp_ffname_cache != NULL && path_is_absolute(entry);
+  if (cache) {
+    char *cached = map_get(cstr_t, ptr_t)(rtp_ffname_cache, entry);
+    if (cached != NULL) {
+      return cached;
+    }
+  }
+
+  char *ffname = fix_fname(entry);
+  if (ffname == NULL) {
+    return NULL;
+  }
+  if (cache) {
+    map_put(cstr_t, ptr_t)(rtp_ffname_cache, xstrdup(entry), ffname);
+  } else {
+    *to_free = ffname;
+  }
+  return ffname;
+}
+
 /// Add the package directory to 'runtimepath'
 ///
 /// @param fname the package path
@@ -1098,7 +1133,8 @@ static int add_pack_dir_to_rtp(char *fname, bool is_pack)
 
     if (insp == NULL) {
       add_pathsep(buf.data);
-      char *const rtp_ffname = fix_fname(buf.data);
+      char *rtp_ffname_to_free;
+      const char *const rtp_ffname = rtp_entry_ffname(buf.data, &rtp_ffname_to_free);
       if (rtp_ffname == NULL) {
         goto theend;
       }
@@ -1106,7 +1142,7 @@ static int add_pack_dir_to_rtp(char *fname, bool is_pack)
         // Insert "ffname" after this entry (and comma).
         insp = entry;
       }
-      xfree(rtp_ffname);
+      xfree(rtp_ffname_to_free);
     }
   }
 
@@ -1330,7 +1366,18 @@ static bool add_opt_pack_plugins(int num_fnames, char **fnames, bool all, void *
 /// Add all packages in the "start" directory to 'runtimepath'.
 void add_pack_start_dirs(void)
 {
+  Map(cstr_t, ptr_t) cache = MAP_INIT;
+  rtp_ffname_cache = &cache;
   do_in_path(p_pp, "", NULL, DIP_ALL + DIP_DIR, add_pack_start_dir, NULL);
+  rtp_ffname_cache = NULL;
+
+  const char *key;
+  void *value;
+  map_foreach(&cache, key, value, {
+    xfree((char *)key);
+    xfree(value);
+  });
+  map_destroy(cstr_t, &cache);
 }
 
 static bool pack_has_entries(char *buf)
